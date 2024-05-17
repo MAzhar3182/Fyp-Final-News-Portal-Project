@@ -5,25 +5,31 @@ import NewsModal from "../models/News.js";
 import fs from "fs";
 import sharp from "sharp";
 import { v4 as uuidv4 } from 'uuid';
+const { Schema } = mongoose;
+import mongoose from 'mongoose';
 import Category from "../models/Category.js";
 // Sign Up Function
 import multer from 'multer';
 import moment from 'moment';
+import cloudinary from "cloudinary";
+import Role from "../models/Role.js";
+// Configure Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
 const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 export const userRegistration = async (req, res) => {
   const { name, email, password, password_confirmation, tc, gender, age } = req.body;
-
   try {
     const user = await UserModel.findOne({ email: email });
-
     if (user) {
       return res.send({ "status": "Failed", "message": "Email Already Exists" });
     }
-
     const salt = await bcrypt.genSalt(12);
     const hashPassword = await bcrypt.hash(password, salt);
-
     const doc = new UserModel({
       name,
       email,
@@ -40,10 +46,8 @@ export const userRegistration = async (req, res) => {
       // Save or process the profile image as needed and store the URL/path in the database
       doc.profileImage = `data:image/jpeg;base64,${profileImageBase64}`;
     }
-
     await doc.save();
     const saved_user = await UserModel.findOne({ email: email });
-
     const token = jwt.sign(
       { userId: saved_user._id },
       process.env.JWT_SECRET_KEY,
@@ -60,7 +64,16 @@ export const userRegistration = async (req, res) => {
     res.send({ "status": "Failed", "message": "Unable To Register" });
   }
 };
-
+// Get Users
+export const getUsers = async (req, res) => {
+  try {
+    const users = await UserModel.find();
+    res.status(200).json({ success: true, users });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+};
 // Example API endpoint to get user data based on the token
 export const getUserData = async (req, res) => {
   try {
@@ -107,7 +120,7 @@ export const userLogin = async (req, res) => {
 export const updateProfile = async (req, res) => {
   const userId = req.params._id; // Get user ID from request parameters
   const { name, email, gender, age } = req.fields; // Assuming form data is sent using formidable
-
+  const {profileimage} = req.files;
   try {
     // Check if the user exists
     const user = await UserModel.findById(userId);
@@ -128,9 +141,16 @@ export const updateProfile = async (req, res) => {
     if (age) {
       user.age = age;
     }
-    
+
+    // Handle profile image upload
+  // If there's an image, process and save it
+  if (profileimage) {
+    user.profileimage.data = fs.readFileSync(profileimage.path);
+    user.profileimage.contentType = profileimage.type;
+  }
     // Save the updated user profile
     await user.save();
+    console.log(user);
     res.status(200).json({ success: true, message: 'Profile updated successfully', user });
   } catch (error) {
     console.error(error);
@@ -213,9 +233,11 @@ export const getNews = async (req, res) => {
           _id: news._id,
           title: news.title,
           channel: news.channel,
+          approved:news.approved,
           description: news.description,
           category: news.category,
           person: news.person,
+          likesCount:news.likesCount,
           image: {
             url: smallImageUrl,
             contentType: news.image.contentType,
@@ -240,6 +262,24 @@ export const getNews = async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+};
+// News Approved Or Reject
+export const newsAproved=async (req, res) => {
+  const { id } = req.params;
+  const { approved } = req.body;
+  try {
+    // Find the news article by ID and update the approved field
+    const updatedNews = await NewsModal.findByIdAndUpdate(id, { approved }, { new: true });
+
+    if (!updatedNews) {
+      return res.status(404).json({ message: 'News article not found' });
+    }
+
+    res.json({ message: 'Approval status updated successfully', news: updatedNews });
+  } catch (error) {
+    console.error('Error updating approval status:', error);
+    res.status(500).json({ message: 'Internal server error' });
   }
 };
 // Delete News Function
@@ -360,4 +400,68 @@ export const getSingleNews = async (req, res) => {
     console.error(error);
     return res.status(500).json({ success: false, error: 'Internal Server Error' });
   }
+};
+// Define the API endpoint for following a news creator
+export const followPerson= async (req, res) => {
+  try {
+    const { userId, creatorId } = req.body;
+
+    // Check if both user ID and creator ID are provided
+    if (!userId || !creatorId) {
+      return res.status(400).json({ success: false, message: 'User ID and creator ID are required' });
+    }
+
+    // Find the user and the news creator by their IDs
+    const user = await UserModel.findById(userId);
+    const creator = await UserModel.findById(creatorId);
+
+    // Check if both user and creator exist
+    if (!user || !creator) {
+      return res.status(404).json({ success: false, message: 'User or creator not found' });
+    }
+
+    // Check if the user is already following the creator
+    if (user.following.includes(creatorId)) {
+      return res.status(400).json({ success: false, message: 'User is already following this creator' });
+    }
+
+    // Add the creator's ID to the user's list of followed creators
+    user.following.push(creatorId);
+
+    // Save the updated user profile
+    await user.save();
+
+    res.status(200).json({ success: true, message: 'User is now following the news creator', user });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+};
+// Define the API endpoint to update a user's role (and thus permissions)
+export const addUserRole = async (req, res) => {
+  try {
+    // Extract userId and roleId from the request body
+    const { userId, roleId } = req.body;
+
+    // Find the user by ID
+    const user = await UserModel.findById(userId);
+
+    // Check if the user exists
+    if (!user) {
+        return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // Update the user's role
+    user.role = roleId;
+
+    // Save the updated user
+    await user.save();
+
+    // Respond with success message
+    res.status(200).json({ success: true, message: 'User role updated successfully' });
+} catch (error) {
+    console.error(error);
+    // Respond with error message
+    res.status(500).json({ success: false, error: 'Internal Server Error' });
+}
 };

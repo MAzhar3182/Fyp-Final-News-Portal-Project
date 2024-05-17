@@ -9,6 +9,10 @@ const newsSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
+  approved: {
+    type: Boolean,
+    default: false,
+  },
   image: {
     data: Buffer,
     contentType: String,
@@ -27,6 +31,10 @@ const newsSchema = new mongoose.Schema({
   person: {
     type: String,
     required: true,
+  },
+  likesCount: {
+    type: Number,
+    default: 0,
   },
   timestamp: {
     type: Date,
